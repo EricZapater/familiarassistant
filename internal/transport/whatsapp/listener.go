@@ -1,0 +1,121 @@
+package whatsapp
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/ericzapater/familiarassistant/internal/domain"
+	"github.com/ericzapater/familiarassistant/internal/orchestrator"
+	"go.mau.fi/whatsmeow/types/events"
+)
+
+// Listener escolta esdeveniments de WhatsApp, valida la privacitat i canalitza les peticions cap a l'orquestrador.
+type Listener struct {
+	allowedGroupID string
+	allowedMyID    string
+	orchestrator   *orchestrator.Service
+	sender         domain.MessageSender
+}
+
+// NewListener crea un nou Listener de WhatsApp.
+func NewListener(allowedGroupID, allowedMyID string, orchestrator *orchestrator.Service, sender domain.MessageSender) *Listener {
+	return &Listener{
+		allowedGroupID: strings.TrimSpace(allowedGroupID),
+		allowedMyID:    strings.TrimSpace(allowedMyID),
+		orchestrator:   orchestrator,
+		sender:         sender,
+	}
+}
+
+// HandleEvent és la funció de callback registrada a whatsmeow via AddEventHandler.
+func (l *Listener) HandleEvent(evt interface{}) {
+	switch v := evt.(type) {
+	case *events.Message:
+		l.handleMessage(v)
+	}
+}
+
+func (l *Listener) handleMessage(msg *events.Message) {
+	// Guardarraïl de Privacitat: Valida estrictament que el ChatID coincideixi amb el grup familiar configurat.
+	chatID := msg.Info.Chat.String()
+	/*fmt.Println(msg.Info.Chat.User)
+	fmt.Println(msg.Info.Sender.User)*/
+	if chatID != l.allowedGroupID && msg.Info.Sender.User != l.allowedMyID {
+		// Silent drop per a qualsevol missatge d'un altre xat o grup no autoritzat
+		return
+	}
+
+	// Ignorar missatges d'un mateix si venen de la pròpia instància per evitar bucles
+	/*if msg.Info.IsFromMe {
+		return
+	}*/
+
+	// Extreure el text net del missatge
+	rawText := extractTextMessage(msg)
+	rawText = strings.TrimSpace(rawText)
+	if rawText == "" {
+		return
+	}
+
+	// Identificar comandaments `/nutri` o `/calendar`
+	var cmd domain.CommandType
+	var cleanQuestion string
+
+	switch {
+	case strings.HasPrefix(strings.ToLower(rawText), "/nutri"):
+		cmd = domain.CmdNutri
+		cleanQuestion = strings.TrimSpace(rawText[len("/nutri"):])
+	case strings.HasPrefix(strings.ToLower(rawText), "/calendar"):
+		cmd = domain.CmdCalendar
+		cleanQuestion = strings.TrimSpace(rawText[len("/calendar"):])
+	case strings.HasPrefix(strings.ToLower(rawText), "/flushcache"):
+		cmd = domain.CmdFlushCache
+		cleanQuestion = ""
+	default:
+		// No és un comandament reconegut per al bot, ignorar-ho silenciosament
+		return
+	}
+
+	log.Printf("[WhatsApp Listener] Rebut comandament '/%s' de %s al grup %s. Pregunta: '%s'", cmd, msg.Info.Sender.User, chatID, cleanQuestion)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	query := domain.Query{
+		Command:   cmd,
+		RawText:   cleanQuestion,
+		Timestamp: msg.Info.Timestamp,
+	}
+
+	// Invocació de l'orquestrador de domini
+	respText, err := l.orchestrator.ProcessQuery(ctx, query)
+	if err != nil {
+		log.Printf("[WhatsApp Listener] Error al processar la petició de WhatsApp: %v", err)
+		// Gestió d'errors amigable per a l'usuari (sense panics)
+		userErrorMsg := fmt.Sprintf("⚠️ Ho sento @%s, hi ha hagut un error al processar la teva petició. Torna-ho a provar d'aquí a uns moments.", msg.Info.Sender.User)
+		_ = l.sender.SendText(context.Background(), chatID, userErrorMsg)
+		return
+	}
+
+	// Enviar resposta al grup de WhatsApp
+	err = l.sender.SendText(context.Background(), chatID, respText)
+	if err != nil {
+		log.Printf("[WhatsApp Listener] Error enviant la resposta a WhatsApp: %v", err)
+	}
+}
+
+func extractTextMessage(msg *events.Message) string {
+	if msg.Message == nil {
+		return ""
+	}
+	if conversation := msg.Message.GetConversation(); conversation != "" {
+		return conversation
+	}
+	if extended := msg.Message.GetExtendedTextMessage(); extended != nil {
+		return extended.GetText()
+	}
+	return ""
+}

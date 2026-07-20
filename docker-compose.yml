@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  familiarassistant:
+    image: ghcr.io/ericzapater/familiarassistant:latest
+    container_name: familiarassistant
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data/whatsapp_session.db:/app/whatsapp_session.db
+      - ./config/service-account.json:/app/service-account.json

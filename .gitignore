@@ -1,0 +1,27 @@
+# Binaris i executable
+/bin/
+/bot
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Configuration and Credentials (SECRET)
+.env
+*.json
+!example*.json
+
+# Databases & Session Stores
+*.db
+*.sqlite
+*.db-journal
+*.db-wal
+whatsapp_session.db
+/data/
+/config/
+
+# OS & Editor files
+.DS_Store
+.vscode/
+.idea/
