@@ -12,6 +12,7 @@ import (
 type Config struct {
 	WhatsAppGroupID       string
 	WhatsAppMyID          string
+	WhatsAppDBPath        string
 	GeminiAPIKey          string
 	GeminiModel           string
 	PostgresDSN           string
@@ -28,6 +29,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		WhatsAppGroupID:       getEnv("WHATSAPP_GROUP_ID", ""),
 		WhatsAppMyID:          getEnv("WHATSAPP_MY_ID", ""),
+		WhatsAppDBPath:        getEnv("WHATSAPP_DB_PATH", "data/whatsapp_session.db"),
 		GeminiAPIKey:          getEnv("GEMINI_API_KEY", ""),
 		GeminiModel:           getEnv("GEMINI_MODEL", "gemini-2.5-flash"),
 		PostgresDSN:           getEnv("POSTGRES_DSN", ""),

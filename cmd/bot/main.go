@@ -60,7 +60,7 @@ func main() {
 	log.Println("✓ Servei d'Orquestració de domini creat")
 
 	// 6. Inicialitzar el client i adaptador de WhatsApp (whatsmeow)
-	waClient, msgSender, err := wainfra.NewWhatsAppClient("whatsapp_session.db")
+	waClient, msgSender, err := wainfra.NewWhatsAppClient(cfg.WhatsAppDBPath)
 	if err != nil {
 		log.Fatalf("Fatal: Error inicialitzant WhatsApp: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/ericzapater/familiarassistant/internal/domain"
 	_ "github.com/mattn/go-sqlite3"
@@ -23,6 +24,10 @@ type Client struct {
 
 // NewWhatsAppClient inicialitza el client de whatsmeow, gestiona el login/QR i connecta a WhatsApp.
 func NewWhatsAppClient(dbPath string) (*Client, domain.MessageSender, error) {
+	if dir := filepath.Dir(dbPath); dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0755)
+	}
+
 	dbLog := waLog.Stdout("Database", "WARN", true)
 	ctx := context.Background()
 	container, err := sqlstore.New(ctx, "sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", dbPath), dbLog)
