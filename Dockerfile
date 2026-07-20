@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:alpine AS builder
 
 # Insta-l·la eines de compilació (gcc i musl-dev són necessaris per go-sqlite3)
 RUN apk add --no-cache git tzdata ca-certificates gcc musl-dev
