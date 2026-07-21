@@ -8,16 +8,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ericzapater/familiarassistant/internal/config"
 	"github.com/ericzapater/familiarassistant/internal/domain"
+	"github.com/ericzapater/familiarassistant/internal/infrastructure/bondia"
 )
 
 // Service és l'orquestrador central de l'aplicació (cervell del negoci).
 type Service struct {
-	cacheRepo    domain.CacheRepository
-	mealRepo     domain.MealPlanRepository
-	calendarSvc  domain.CalendarService
-	aiSvc        domain.AIService
-	loc          *time.Location
+	cacheRepo   domain.CacheRepository
+	mealRepo    domain.MealPlanRepository
+	calendarSvc domain.CalendarService
+	aiSvc       domain.AIService
+	tpService   domain.TrainingPeaksService
+	bondiaSvc   *bondia.Service
+	tpUsersMap  map[string]config.UserTPConfig
+	loc         *time.Location
 }
 
 // NewService crea un nou servei d'orquestració amb les seves dependències injectades.
@@ -26,6 +31,9 @@ func NewService(
 	mealRepo domain.MealPlanRepository,
 	calendarSvc domain.CalendarService,
 	aiSvc domain.AIService,
+	tpService domain.TrainingPeaksService,
+	bondiaSvc *bondia.Service,
+	tpUsersMap map[string]config.UserTPConfig,
 	timezone string,
 ) *Service {
 	loc, err := time.LoadLocation(timezone)
@@ -38,6 +46,9 @@ func NewService(
 		mealRepo:    mealRepo,
 		calendarSvc: calendarSvc,
 		aiSvc:       aiSvc,
+		tpService:   tpService,
+		bondiaSvc:   bondiaSvc,
+		tpUsersMap:  tpUsersMap,
 		loc:         loc,
 	}
 }
@@ -182,9 +193,75 @@ func (s *Service) ExecuteFunction(ctx context.Context, name string, args map[str
 			"esdeveniment": createdEvt,
 		}, nil
 
+	case "ObtenirMetriquesRendiment":
+		nomUsuari, _ := args["nom_usuari"].(string)
+		userCfg, found := s.findTPUserConfig(nomUsuari)
+		if !found {
+			return map[string]string{
+				"error": "⚠️ No m'he pogut connectar al teu compte de TrainingPeaks actualment.",
+			}, nil
+		}
+
+		data, err := s.tpService.GetPMCData(ctx, userCfg.Username, userCfg.Password, userCfg.Cookie, userCfg.Token)
+		if err != nil {
+			log.Printf("[Orchestrator] Error en connector TrainingPeaks (GetPMCData): %v", err)
+			return map[string]string{
+				"error": "⚠️ No m'he pogut connectar al teu compte de TrainingPeaks actualment.",
+			}, nil
+		}
+		data.UserName = userCfg.Name
+		return data, nil
+
+	case "ObtenirEntrenamentPlanificat":
+		nomUsuari, _ := args["nom_usuari"].(string)
+		dateStr, _ := args["data"].(string)
+		if dateStr == "" {
+			dateStr = time.Now().In(s.loc).Format("2006-01-02")
+		}
+
+		userCfg, found := s.findTPUserConfig(nomUsuari)
+		if !found {
+			return map[string]string{
+				"error": "⚠️ No m'he pogut connectar al teu compte de TrainingPeaks actualment.",
+			}, nil
+		}
+
+		workouts, err := s.tpService.GetDailyWorkouts(ctx, userCfg.Username, userCfg.Password, userCfg.Cookie, userCfg.Token, dateStr)
+		if err != nil {
+			log.Printf("[Orchestrator] Error en connector TrainingPeaks (GetDailyWorkouts): %v", err)
+			return map[string]string{
+				"error": "⚠️ No m'he pogut connectar al teu compte de TrainingPeaks actualment.",
+			}, nil
+		}
+		return workouts, nil
+
+	case "ObtenirNoticiesICuriositats":
+		items, err := s.bondiaSvc.GetNewsAndCuriosities(ctx)
+		if err != nil {
+			log.Printf("[Orchestrator] Error en connector BonDia (GetNewsAndCuriosities): %v", err)
+			return nil, fmt.Errorf("error obtenint notícies i curiositats: %w", err)
+		}
+		return items, nil
+
 	default:
 		return nil, fmt.Errorf("funció desconeguda: %s", name)
 	}
+}
+
+func (s *Service) findTPUserConfig(name string) (config.UserTPConfig, bool) {
+	nameClean := strings.ToLower(strings.TrimSpace(name))
+	for _, u := range s.tpUsersMap {
+		if strings.ToLower(u.Name) == nameClean || strings.ToLower(u.Username) == nameClean {
+			return u, true
+		}
+	}
+	// Fallback si només tenim un usuari registrat
+	if len(s.tpUsersMap) == 1 {
+		for _, u := range s.tpUsersMap {
+			return u, true
+		}
+	}
+	return config.UserTPConfig{}, false
 }
 
 // generateCacheParams genera la clau i la data d'expiració de la cache segons el tipus de comandament.
@@ -212,8 +289,28 @@ func (s *Service) generateCacheParams(query domain.Query, now time.Time) (string
 		expiresAt := now.Add(15 * time.Minute)
 		return key, expiresAt
 
+	case domain.CmdTraining:
+		normalizedText := strings.ToLower(strings.TrimSpace(query.RawText))
+		hash := sha256.Sum256([]byte(normalizedText))
+		questionHash := fmt.Sprintf("%x", hash[:8])
+		user := strings.ToLower(strings.TrimSpace(query.UserName))
+		if user == "" {
+			user = "default"
+		}
+		dateStr := now.Format("2006-01-02")
+		key := fmt.Sprintf("training:%s:%s:%s", user, questionHash, dateStr)
+		expiresAt := now.Add(15 * time.Minute)
+		return key, expiresAt
+
+	case domain.CmdBonDia:
+		dateStr := now.Format("2006-01-02")
+		key := fmt.Sprintf("bondia:%s", dateStr)
+		endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, s.loc)
+		return key, endOfDay
+
 	default:
 		key := fmt.Sprintf("generic:%d", now.Unix())
 		return key, now.Add(5 * time.Minute)
 	}
 }
+

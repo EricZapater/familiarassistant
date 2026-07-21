@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ericzapater/familiarassistant/internal/config"
 	"github.com/ericzapater/familiarassistant/internal/domain"
 	"github.com/ericzapater/familiarassistant/internal/orchestrator"
 	"go.mau.fi/whatsmeow/types/events"
@@ -18,15 +19,17 @@ type Listener struct {
 	allowedMyID    string
 	orchestrator   *orchestrator.Service
 	sender         domain.MessageSender
+	tpUsersMap     map[string]config.UserTPConfig
 }
 
 // NewListener crea un nou Listener de WhatsApp.
-func NewListener(allowedGroupID, allowedMyID string, orchestrator *orchestrator.Service, sender domain.MessageSender) *Listener {
+func NewListener(allowedGroupID, allowedMyID string, orchestrator *orchestrator.Service, sender domain.MessageSender, tpUsersMap map[string]config.UserTPConfig) *Listener {
 	return &Listener{
 		allowedGroupID: strings.TrimSpace(allowedGroupID),
 		allowedMyID:    strings.TrimSpace(allowedMyID),
 		orchestrator:   orchestrator,
 		sender:         sender,
+		tpUsersMap:     tpUsersMap,
 	}
 }
 
@@ -39,19 +42,12 @@ func (l *Listener) HandleEvent(evt interface{}) {
 }
 
 func (l *Listener) handleMessage(msg *events.Message) {
-	// Guardarraïl de Privacitat: Valida estrictament que el ChatID coincideixi amb el grup familiar configurat.
+	// Guardarraïl de Privacitat: Valida strictly que el ChatID coincideixi amb el grup familiar configurat.
 	chatID := msg.Info.Chat.String()
-	/*fmt.Println(msg.Info.Chat.User)
-	fmt.Println(msg.Info.Sender.User)*/
 	if chatID != l.allowedGroupID && msg.Info.Sender.User != l.allowedMyID {
 		// Silent drop per a qualsevol missatge d'un altre xat o grup no autoritzat
 		return
 	}
-
-	// Ignorar missatges d'un mateix si venen de la pròpia instància per evitar bucles
-	/*if msg.Info.IsFromMe {
-		return
-	}*/
 
 	// Extreure el text net del missatge
 	rawText := extractTextMessage(msg)
@@ -60,7 +56,7 @@ func (l *Listener) handleMessage(msg *events.Message) {
 		return
 	}
 
-	// Identificar comandaments `/nutri` o `/calendar`
+	// Identificar comandaments `/nutri`, `/calendar`, `/training` o `/flushcache`
 	var cmd domain.CommandType
 	var cleanQuestion string
 
@@ -71,6 +67,12 @@ func (l *Listener) handleMessage(msg *events.Message) {
 	case strings.HasPrefix(strings.ToLower(rawText), "/calendar"):
 		cmd = domain.CmdCalendar
 		cleanQuestion = strings.TrimSpace(rawText[len("/calendar"):])
+	case strings.HasPrefix(strings.ToLower(rawText), "/training"):
+		cmd = domain.CmdTraining
+		cleanQuestion = strings.TrimSpace(rawText[len("/training"):])
+	case strings.HasPrefix(strings.ToLower(rawText), "/bondia"):
+		cmd = domain.CmdBonDia
+		cleanQuestion = strings.TrimSpace(rawText[len("/bondia"):])
 	case strings.HasPrefix(strings.ToLower(rawText), "/flushcache"):
 		cmd = domain.CmdFlushCache
 		cleanQuestion = ""
@@ -79,15 +81,33 @@ func (l *Listener) handleMessage(msg *events.Message) {
 		return
 	}
 
-	log.Printf("[WhatsApp Listener] Rebut comandament '/%s' de %s al grup %s. Pregunta: '%s'", cmd, msg.Info.Sender.User, chatID, cleanQuestion)
+	senderPhone := strings.TrimPrefix(strings.TrimSpace(msg.Info.Sender.User), "+")
+	var tpUserCfg config.UserTPConfig
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Flux de Seguretat per al comandament /training:
+	// Si el telèfon NO està registrat al JSON de TP_USERS_CONFIG, realitza un 'return' silenciós.
+	if cmd == domain.CmdTraining {
+		cfg, registered := l.tpUsersMap[senderPhone]
+		if !registered {
+			log.Printf("[WhatsApp Listener Security Filter] Telèfon %s no registrat a TP_USERS_CONFIG. Return silenciós.", senderPhone)
+			return
+		}
+		tpUserCfg = cfg
+	}
+
+	log.Printf("[WhatsApp Listener] Rebut comandament '/%s' de %s (%s) al grup %s. Pregunta: '%s'", cmd, senderPhone, tpUserCfg.Name, chatID, cleanQuestion)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 
 	query := domain.Query{
-		Command:   cmd,
-		RawText:   cleanQuestion,
-		Timestamp: msg.Info.Timestamp,
+		Command:     cmd,
+		RawText:     cleanQuestion,
+		Timestamp:   msg.Info.Timestamp,
+		SenderPhone: senderPhone,
+		UserName:    tpUserCfg.Name,
+		TPUsername:  tpUserCfg.Username,
+		TPPassword:  tpUserCfg.Password,
 	}
 
 	// Invocació de l'orquestrador de domini

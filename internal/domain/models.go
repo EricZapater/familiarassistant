@@ -8,14 +8,22 @@ type CommandType string
 const (
 	CmdNutri      CommandType = "nutri"
 	CmdCalendar   CommandType = "calendar"
+	CmdTraining   CommandType = "training"
 	CmdFlushCache CommandType = "flushcache"
+	CmdBonDia     CommandType = "bondia"
 )
 
 // Query és la petició de l'usuari parsejada i col·locada en domini.
 type Query struct {
-	Command   CommandType
-	RawText   string
-	Timestamp time.Time
+	Command     CommandType
+	RawText     string
+	Timestamp   time.Time
+	SenderPhone string
+	UserName    string
+	TPUsername  string
+	TPPassword  string
+	TPCookie    string
+	TPToken     string
 }
 
 // CacheEntry representa un registre emmagatzemat a la memòria cau de PostgreSQL.
@@ -42,3 +50,20 @@ type CalendarEvent struct {
 	EndTime     time.Time `json:"end_time"`
 	Location    string    `json:"location,omitempty"`
 }
+
+// PMCData representa les mètriques de rendiment Performance Management Chart (CTL, ATL, TSB).
+type PMCData struct {
+	UserName string  `json:"user_name"`
+	CTL      float64 `json:"ctl"` // Fitness (Chronic Training Load)
+	ATL      float64 `json:"atl"` // Fatigue (Acute Training Load)
+	TSB      float64 `json:"tsb"` // Form (Training Stress Balance)
+}
+
+// WorkoutData representa la descripció i detalls d'una sessió d'entrenament planificada a TrainingPeaks.
+type WorkoutData struct {
+	Date        string  `json:"date"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	PlannedTSS  float64 `json:"planned_tss"`
+}
+

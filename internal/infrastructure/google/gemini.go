@@ -39,18 +39,43 @@ func NewGeminiService(ctx context.Context, apiKey string, model string) (*Gemini
 // Chat executa la petició a Gemini 2.0 Flash gestionant el cicle de vida de Function Calling.
 func (g *GeminiService) Chat(ctx context.Context, query domain.Query, tools domain.ToolProvider) (string, error) {
 	nowStr := query.Timestamp.Format("2006-01-02 15:04 (Monday)")
-	systemPrompt := fmt.Sprintf(`Ets un assistent familiar atent, clar i amable que respon sempre en català.
-La data i hora actual de la petició és: %s.
+	todayDateStr := query.Timestamp.Format("2006-01-02")
+	targetUser := query.UserName
+	if targetUser == "" {
+		targetUser = "atleta"
+	}
 
-Tens accés a tres eines (tools):
+	systemPrompt := fmt.Sprintf(`Ets un assistent familiar i entrenador d'esports atent, clar i amable que respon sempre en català.
+La data i hora actual de la petició és: %s.
+L'usuari actiu de la petició és: '%s'.
+
+Tens accés a les següents eines (tools):
 1. ConsultarPauta: permet veure el menú/pauta nutricional per a un dia determinat (ex: 'dilluns', 'dimarts', ..., 'diumenge' o 'tots').
 2. ConsultarCalendari: permet consultar els esdeveniments del calendari familiar ('today' o 'week').
 3. CrearEsdeveniment: permet afegir o agendar un nou esdeveniment al calendari familiar de Google.
+4. ObtenirMetriquesRendiment: obté les mètriques PMC actuals de TrainingPeaks (CTL: Fitness, ATL: Fatigue, TSB: Form) de l'atleta indicat.
+5. ObtenirEntrenamentPlanificat: obté la sessió d'entrenament planificada a TrainingPeaks per a una data (YYYY-MM-DD) i un atleta.
+6. ObtenirNoticiesICuriositats: obté bones notícies, efemèrides de la data d'avui i curiositats amb enllaços verificats.
 
-Quan l'usuari demani afegir, crear, anotar o agendar un esdeveniment, calcula la data i hora d'inici en format ISO 8601 basant-te en la data actual (%s) i crida 'CrearEsdeveniment'.
-Quan l'usuari pregunti sobre l'agenda, compromisos o quins esdeveniments hi ha, crida 'ConsultarCalendari'.
+INSTRUCCIONS DE RENDIMENT I SALUT ESPORTIVA (TSB / Form):
+- El TSB (Training Stress Balance / Form) mesura l'estat de forma i frescor de l'atleta:
+  * Zona Óptima d'Entrenament (Productiva): TSB entre -10 i -30. L'atleta està assimilant bé la càrrega.
+  * Risc Crític de Lesió / Sobreentrenament: TSB per sota de -30. ALERTA CRÍTICA: Has d'advertir l'atleta del risc elevat de sobreentrenament o lesió i suggerir prioritzar el descans, reduir la intensitat o fer una sessió regenerativa fàcil.
+  * Zona de Frescor / Competició: TSB entre 0 i +15.
 
-Respon de manera natural, utilitzant emojis apropiats, i confirma clarament quan un esdeveniment s'hagi creat correctament.`, nowStr, nowStr)
+Quan l'usuari invoqui el comandament /training:
+- Si l'usuari pregunta què toca entrenar o demana la sessió planificada (per a avui, demà o qualsevol data específiques), crida ÚNICAMENT la tool 'ObtenirEntrenamentPlanificat' calculant la data requerida (format YYYY-MM-DD) i el nom d'usuari '%s'. NO cridis 'ObtenirMetriquesRendiment' (PMC) en aquest cas.
+- Només si l'usuari demana explícitament l'estat de forma, PMC, TSB, fatiga o rendiment general, crida la tool 'ObtenirMetriquesRendiment'.
+- Si s'envia el comandament /training sense cap text addicional, crida 'ObtenirEntrenamentPlanificat' per a la data d'avui '%s'.
+
+Quan l'usuari invoqui el comandament /bondia:
+- Crida sempre la tool 'ObtenirNoticiesICuriositats'.
+- Tria a l'atzar un dels elements obtinguts (una bona notícia, una efemèride o una curiositat) o fes-ne un resum combinat de fins a 2 temes si són molt interessants.
+- Tradueix el contingut al català si cal.
+- Escriu un text de bon dia alegre, motivador i formalment correcte.
+- ATENCIÓ CRÍTICA: Has de dir estrictament la veritat d'acord amb la informació rebuda per la tool. Està prohibit inventar-se fets, dades o enllaços. Afegeix al final el corresponent enllaç que la tool et proporcioni (sense acurçar-lo ni modificar-lo) per justificar la veracitat.
+
+Respon de manera estructurada, clara i motivadora, utilitzant emojis apropiats (🏃‍♂️, 🚴‍♂️, 🏋️‍♂️, ⚠️, 📊, ☀️, 📰, 💡).`, nowStr, targetUser, targetUser, todayDateStr)
 
 	// Definició de les eines (Tools) per a Function Calling
 	toolsConfig := []*genai.Tool{
@@ -112,6 +137,45 @@ Respon de manera natural, utilitzant emojis apropiats, i confirma clarament quan
 							},
 						},
 						Required: []string{"titol", "data_inici"},
+					},
+				},
+				{
+					Name:        "ObtenirMetriquesRendiment",
+					Description: "Obté els valors numèrics de PMC (CTL/Fitness, ATL/Fatigue, TSB/Form) actuals de l'atleta des de TrainingPeaks.",
+					Parameters: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"nom_usuari": {
+								Type:        genai.TypeString,
+								Description: "El nom de l'usuari/atleta a consultar a TrainingPeaks (ex: 'eric', 'sagal').",
+							},
+						},
+						Required: []string{"nom_usuari"},
+					},
+				},
+				{
+					Name:        "ObtenirEntrenamentPlanificat",
+					Description: "Obté els detalls de la sessió d'entrenament planificada per a un dia determinat (títol, descripció amb sèries estructurades i TSS previst).",
+					Parameters: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"nom_usuari": {
+								Type:        genai.TypeString,
+								Description: "El nom de l'usuari/atleta a consultar a TrainingPeaks (ex: 'eric', 'sagal').",
+							},
+							"data": {
+								Type:        genai.TypeString,
+								Description: "La data a consultar en format ISO YYYY-MM-DD (ex: '2026-07-20').",
+							},
+						},
+						Required: []string{"nom_usuari", "data"},
+					},
+				},
+				{
+					Name:        "ObtenirNoticiesICuriositats",
+					Description: "Obté bones notícies, efemèrides de la data d'avui i curiositats amb enllaços web verificats.",
+					Parameters: &genai.Schema{
+						Type: genai.TypeObject,
 					},
 				},
 			},

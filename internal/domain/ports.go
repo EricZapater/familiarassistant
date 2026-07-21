@@ -36,3 +36,10 @@ type AIService interface {
 type MessageSender interface {
 	SendText(ctx context.Context, chatID string, text string) error
 }
+
+// TrainingPeaksService defineix el contracte per connectar amb l'infraestructura de TrainingPeaks / MCP bridge.
+type TrainingPeaksService interface {
+	GetPMCData(ctx context.Context, username, password, cookie, token string) (*PMCData, error)
+	GetDailyWorkouts(ctx context.Context, username, password, cookie, token, date string) ([]WorkoutData, error)
+}
+

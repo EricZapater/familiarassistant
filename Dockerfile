@@ -19,11 +19,14 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o /app/bot ./cmd/bot
 # Runtime stage
 FROM alpine:latest
 
-RUN apk add --no-cache tzdata ca-certificates sqlite-dev
+RUN apk add --no-cache tzdata ca-certificates sqlite-dev python3 py3-requests
 
 WORKDIR /app
 
-# Copiar el binari des del builder
+# Copiar el binari i l'script de subprocés MCP des del builder
 COPY --from=builder /app/bot /app/bot
+COPY --from=builder /app/internal/infrastructure/trainingpeaks/tp_bridge.py /app/internal/infrastructure/trainingpeaks/tp_bridge.py
+COPY --from=builder /app/internal/infrastructure/bondia/bondia_bridge.py /app/internal/infrastructure/bondia/bondia_bridge.py
 
 CMD ["/app/bot"]
+

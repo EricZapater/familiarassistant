@@ -9,7 +9,9 @@ import (
 
 	"github.com/ericzapater/familiarassistant/internal/config"
 	"github.com/ericzapater/familiarassistant/internal/infrastructure/database"
+	"github.com/ericzapater/familiarassistant/internal/infrastructure/bondia"
 	googleinfra "github.com/ericzapater/familiarassistant/internal/infrastructure/google"
+	tpinfra "github.com/ericzapater/familiarassistant/internal/infrastructure/trainingpeaks"
 	wainfra "github.com/ericzapater/familiarassistant/internal/infrastructure/whatsapp"
 	"github.com/ericzapater/familiarassistant/internal/orchestrator"
 	walistener "github.com/ericzapater/familiarassistant/internal/transport/whatsapp"
@@ -49,17 +51,28 @@ func main() {
 	}
 	log.Printf("✓ Client de Google Gemini inicialitzat (Model: %s)", cfg.GeminiModel)
 
-	// 5. Inicialitzar el servei d'Orquestració (Lògica pura de Domini)
+	// 5. Inicialitzar el connector d'infraestructura de TrainingPeaks MCP
+	tpSvc := tpinfra.NewService()
+	log.Printf("✓ Connector de TrainingPeaks MCP carregat amb %d usuaris registrats", len(cfg.TPUsersMap))
+
+	// 5b. Inicialitzar el connector de notícies /bondia
+	bondiaSvc := bondia.NewService()
+	log.Println("✓ Connector de Notícies BonDia inicialitzat")
+
+	// 6. Inicialitzar el servei d'Orquestració (Lògica pura de Domini)
 	orchSvc := orchestrator.NewService(
 		postgresRepo,
 		postgresRepo,
 		calendarSvc,
 		geminiSvc,
+		tpSvc,
+		bondiaSvc,
+		cfg.TPUsersMap,
 		cfg.Timezone,
 	)
 	log.Println("✓ Servei d'Orquestració de domini creat")
 
-	// 6. Inicialitzar el client i adaptador de WhatsApp (whatsmeow)
+	// 7. Inicialitzar el client i adaptador de WhatsApp (whatsmeow)
 	waClient, msgSender, err := wainfra.NewWhatsAppClient(cfg.WhatsAppDBPath)
 	if err != nil {
 		log.Fatalf("Fatal: Error inicialitzant WhatsApp: %v", err)
@@ -67,12 +80,13 @@ func main() {
 	defer waClient.Disconnect()
 	log.Println("✓ Client de WhatsApp connectat")
 
-	// 7. Configurar el Listener de transport de WhatsApp amb el Guardarraïl de Privacitat
-	listener := walistener.NewListener(cfg.WhatsAppGroupID, cfg.WhatsAppMyID, orchSvc, msgSender)
+	// 8. Configurar el Listener de transport de WhatsApp amb el Guardarraïl de Privacitat
+	listener := walistener.NewListener(cfg.WhatsAppGroupID, cfg.WhatsAppMyID, orchSvc, msgSender, cfg.TPUsersMap)
 	waClient.GetClient().AddEventHandler(listener.HandleEvent)
 	log.Printf("✓ Listener de WhatsApp activat per al grup: %s", cfg.WhatsAppGroupID)
 
-	log.Println("🟢 Assistent Familiar actiu i escoltant peticions /nutri i /calendar...")
+	log.Println("🟢 Assistent Familiar actiu i escoltant peticions /nutri, /calendar i /training...")
+
 
 	// 8. Capturar senyals del sistema per a un tancament ordenat (Graceful Shutdown)
 	sigChan := make(chan os.Signal, 1)

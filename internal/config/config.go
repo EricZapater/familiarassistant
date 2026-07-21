@@ -1,12 +1,23 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
+
+// UserTPConfig representa la configuració de TrainingPeaks associada a un usuari/telèfon.
+type UserTPConfig struct {
+	Phone    string `json:"phone"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Cookie   string `json:"cookie,omitempty"`
+	Token    string `json:"token,omitempty"`
+}
 
 // Config manté la configuració global de l'aplicació llegida de l'entorn.
 type Config struct {
@@ -19,6 +30,8 @@ type Config struct {
 	GoogleCalendarID      string
 	GoogleCredentialsFile string
 	Timezone              string
+	TPUsersConfig         string
+	TPUsersMap            map[string]UserTPConfig
 }
 
 // Load carregar les variables d'entorn (des de .env si existeix) i les valida.
@@ -36,6 +49,8 @@ func Load() (*Config, error) {
 		GoogleCalendarID:      getEnv("GOOGLE_CALENDAR_ID", ""),
 		GoogleCredentialsFile: getEnv("GOOGLE_CREDENTIALS_FILE", ""),
 		Timezone:              getEnv("TIMEZONE", "Europe/Madrid"),
+		TPUsersConfig:         getEnv("TP_USERS_CONFIG", ""),
+		TPUsersMap:            make(map[string]UserTPConfig),
 	}
 
 	var missing []string
@@ -60,6 +75,19 @@ func Load() (*Config, error) {
 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("falten les següents variables d'entorn obligatòries: %s", strings.Join(missing, ", "))
+	}
+
+	if cfg.TPUsersConfig != "" {
+		var userList []UserTPConfig
+		if err := json.Unmarshal([]byte(cfg.TPUsersConfig), &userList); err != nil {
+			return nil, fmt.Errorf("error parsejant TP_USERS_CONFIG JSON: %w", err)
+		}
+		for _, u := range userList {
+			cleanPhone := strings.TrimPrefix(strings.TrimSpace(u.Phone), "+")
+			if cleanPhone != "" {
+				cfg.TPUsersMap[cleanPhone] = u
+			}
+		}
 	}
 
 	return cfg, nil
