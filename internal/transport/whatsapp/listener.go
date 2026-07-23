@@ -76,9 +76,9 @@ func (l *Listener) handleMessage(msg *events.Message) {
 	case strings.HasPrefix(strings.ToLower(rawText), "/calendar"):
 		cmd = domain.CmdCalendar
 		cleanQuestion = strings.TrimSpace(rawText[len("/calendar"):])
-	case strings.HasPrefix(strings.ToLower(rawText), "/training"):
-		cmd = domain.CmdTraining
-		cleanQuestion = strings.TrimSpace(rawText[len("/training"):])
+	case strings.HasPrefix(strings.ToLower(rawText), "/mister"):
+		cmd = domain.CmdMister
+		cleanQuestion = strings.TrimSpace(rawText[len("/mister"):])
 	case strings.HasPrefix(strings.ToLower(rawText), "/bondia"):
 		cmd = domain.CmdBonDia
 		cleanQuestion = strings.TrimSpace(rawText[len("/bondia"):])
@@ -93,9 +93,9 @@ func (l *Listener) handleMessage(msg *events.Message) {
 	senderPhone := strings.TrimPrefix(strings.TrimSpace(msg.Info.Sender.User), "+")
 	var tpUserCfg config.UserTPConfig
 
-	// Flux de Seguretat per al comandament /training:
+	// Flux de Seguretat per al comandament /mister:
 	// Si el telèfon NO està registrat al JSON de TP_USERS_CONFIG, realitza un 'return' silenciós.
-	if cmd == domain.CmdTraining {
+	if cmd == domain.CmdMister {
 		cfg, registered := l.tpUsersMap[senderPhone]
 		if !registered {
 			log.Printf("[WhatsApp Listener Security Filter] Telèfon %s no registrat a TP_USERS_CONFIG. Return silenciós.", senderPhone)

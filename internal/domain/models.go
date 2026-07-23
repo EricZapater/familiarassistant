@@ -8,7 +8,7 @@ type CommandType string
 const (
 	CmdNutri      CommandType = "nutri"
 	CmdCalendar   CommandType = "calendar"
-	CmdTraining   CommandType = "training"
+	CmdMister     CommandType = "mister"
 	CmdFlushCache CommandType = "flushcache"
 	CmdBonDia     CommandType = "bondia"
 )

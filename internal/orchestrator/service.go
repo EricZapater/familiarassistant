@@ -78,9 +78,9 @@ func (s *Service) ProcessQuery(ctx context.Context, query domain.Query) (string,
 
 	log.Printf("[Orchestrator] Cache MISS per a la clau '%s'...", cacheKey)
 
-	// 2. Si no hi ha cache, processem directament si és /training o cridem Gemini altrament
+	// 2. Si no hi ha cache, processem directament si és /mister o cridem Gemini altrament
 	var response string
-	if query.Command == domain.CmdTraining {
+	if query.Command == domain.CmdMister {
 		var err error
 		response, err = s.handleDirectTrainingQuery(ctx, query)
 		if err != nil {
@@ -299,7 +299,7 @@ func (s *Service) generateCacheParams(query domain.Query, now time.Time) (string
 		expiresAt := now.Add(15 * time.Minute)
 		return key, expiresAt
 
-	case domain.CmdTraining:
+	case domain.CmdMister:
 		normalizedText := strings.ToLower(strings.TrimSpace(query.RawText))
 		hash := sha256.Sum256([]byte(normalizedText))
 		questionHash := fmt.Sprintf("%x", hash[:8])
@@ -308,7 +308,7 @@ func (s *Service) generateCacheParams(query domain.Query, now time.Time) (string
 			user = "default"
 		}
 		dateStr := now.Format("2006-01-02")
-		key := fmt.Sprintf("training:%s:%s:%s", user, questionHash, dateStr)
+		key := fmt.Sprintf("mister:%s:%s:%s", user, questionHash, dateStr)
 		expiresAt := now.Add(15 * time.Minute)
 		return key, expiresAt
 
@@ -333,10 +333,57 @@ func (s *Service) handleDirectTrainingQuery(ctx context.Context, query domain.Qu
 		return "⚠️ No s'ha trobat cap configuració de TrainingPeaks associada al teu usuari.", nil
 	}
 
-	// Calculem el rang de dates: des d'avui fins a d'aquí 7 dies (8 dies en total)
-	now := time.Now().In(s.loc)
-	startDate := now.Format("2006-01-02")
-	endDate := now.AddDate(0, 0, 7).Format("2006-01-02")
+	baseTime := time.Now().In(s.loc)
+	if !query.Timestamp.IsZero() {
+		baseTime = query.Timestamp.In(s.loc)
+	}
+
+	rawText := strings.TrimSpace(query.RawText)
+	if rawText != "" {
+		// Consulta d'un sol dia
+		targetDate, parsed := parseDateQuery(rawText, baseTime)
+		if !parsed {
+			return fmt.Sprintf("⚠️ No he pogut entendre la data '%s'. Si us plau, utilitza un format com YYYY-MM-DD o un dia de la setmana (ex: 'el proper dimarts').", rawText), nil
+		}
+		targetDateStr := targetDate.Format("2006-01-02")
+
+		workouts, err := s.tpService.GetWorkoutsRange(ctx, userCfg.Username, userCfg.Password, userCfg.Cookie, userCfg.Token, targetDateStr, targetDateStr)
+		if err != nil {
+			log.Printf("[Orchestrator] Error obtenint entrenaments de TrainingPeaks: %v", err)
+			return "", fmt.Errorf("error obtenint entrenaments de TrainingPeaks: %w", err)
+		}
+
+		dayOfWeekName := getWeekdayCatalan(targetDate.Weekday())
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🏋️‍♂️ *Entrenament de %s per a %s (%s)*:\n", capitalize(userCfg.Name), formatDateStr(targetDateStr), dayOfWeekName))
+
+		if len(workouts) == 0 {
+			sb.WriteString("\nNo hi ha cap entrenament planificat a TrainingPeaks per a aquest dia.")
+			return sb.String(), nil
+		}
+
+		for _, w := range workouts {
+			sb.WriteString(fmt.Sprintf("\n• *%s*", w.Title))
+			if w.PlannedTSS > 0 {
+				sb.WriteString(fmt.Sprintf(" (%.1f TSS)", w.PlannedTSS))
+			}
+			sb.WriteString("\n")
+			if w.Description != "" {
+				descLines := strings.Split(w.Description, "\n")
+				for _, line := range descLines {
+					lineClean := strings.TrimSpace(line)
+					if lineClean != "" {
+						sb.WriteString(fmt.Sprintf("  _ %s _\n", lineClean))
+					}
+				}
+			}
+		}
+		return sb.String(), nil
+	}
+
+	// Calculem el rang de dates per defecte: des d'avui fins a d'aquí 7 dies (8 dies en total)
+	startDate := baseTime.Format("2006-01-02")
+	endDate := baseTime.AddDate(0, 0, 7).Format("2006-01-02")
 
 	workouts, err := s.tpService.GetWorkoutsRange(ctx, userCfg.Username, userCfg.Password, userCfg.Cookie, userCfg.Token, startDate, endDate)
 	if err != nil {
@@ -354,7 +401,7 @@ func (s *Service) handleDirectTrainingQuery(ctx context.Context, query domain.Qu
 	
 	// Preparem els propers 8 dies (des d'avui fins a d'aquí 7 dies) per mostrar-los en ordre
 	for i := 0; i <= 7; i++ {
-		dStr := now.AddDate(0, 0, i).Format("2006-01-02")
+		dStr := baseTime.AddDate(0, 0, i).Format("2006-01-02")
 		datesOrdered = append(datesOrdered, dStr)
 	}
 
@@ -406,6 +453,64 @@ func (s *Service) handleDirectTrainingQuery(ctx context.Context, query domain.Qu
 	}
 
 	return sb.String(), nil
+}
+
+func parseDateQuery(text string, baseTime time.Time) (time.Time, bool) {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return time.Time{}, false
+	}
+
+	// 1. Provar formats de data habituals
+	formats := []string{
+		"2006-01-02",
+		"02-01-2006",
+		"02/01/2006",
+		"2006/01/02",
+	}
+	for _, fmtStr := range formats {
+		if t, err := time.Parse(fmtStr, text); err == nil {
+			return t, true
+		}
+	}
+
+	// 2. Paraules relatives
+	if text == "avui" {
+		return baseTime, true
+	}
+	if text == "demà" || text == "dema" {
+		return baseTime.AddDate(0, 0, 1), true
+	}
+	if text == "ahir" {
+		return baseTime.AddDate(0, 0, -1), true
+	}
+	if strings.Contains(text, "demà passat") || strings.Contains(text, "dema passat") {
+		return baseTime.AddDate(0, 0, 2), true
+	}
+
+	// 3. Dies de la setmana en català
+	weekdays := map[string]time.Weekday{
+		"dilluns":   time.Monday,
+		"dimarts":   time.Tuesday,
+		"dimecres":  time.Wednesday,
+		"dijous":    time.Thursday,
+		"divendres": time.Friday,
+		"dissabte":  time.Saturday,
+		"diumenge":  time.Sunday,
+	}
+
+	for word, wd := range weekdays {
+		if strings.Contains(text, word) {
+			currentWd := baseTime.Weekday()
+			diff := int(wd) - int(currentWd)
+			if diff <= 0 {
+				diff += 7
+			}
+			return baseTime.AddDate(0, 0, diff), true
+		}
+	}
+
+	return time.Time{}, false
 }
 
 func formatDateStr(dateStr string) string {
