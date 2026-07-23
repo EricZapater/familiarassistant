@@ -42,10 +42,19 @@ func (l *Listener) HandleEvent(evt interface{}) {
 }
 
 func (l *Listener) handleMessage(msg *events.Message) {
-	// Guardarraïl de Privacitat: Valida strictly que el ChatID coincideixi amb el grup familiar configurat.
 	chatID := msg.Info.Chat.String()
-	if chatID != l.allowedGroupID && msg.Info.Sender.User != l.allowedMyID {
-		// Silent drop per a qualsevol missatge d'un altre xat o grup no autoritzat
+	log.Printf("[WhatsApp Listener] Rebut missatge del xat ID: %s (de: %s)", chatID, msg.Info.Sender.User)
+
+	// Guardarraïl de Privacitat:
+	// - Si és un grup (g.us), només permetem el grup familiar configurat.
+	// - Si és un xat privat, només permetem missatges del propi usuari autoritzat (allowedMyID).
+	isGroup := msg.Info.Chat.Server == "g.us"
+	if isGroup && chatID != l.allowedGroupID {
+		// Silent drop per a grups no autoritzats
+		return
+	}
+	if !isGroup && msg.Info.Sender.User != l.allowedMyID {
+		// Silent drop per a missatges privats de tercers
 		return
 	}
 
