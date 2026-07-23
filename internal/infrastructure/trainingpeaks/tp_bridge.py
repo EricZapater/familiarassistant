@@ -230,6 +230,20 @@ def get_pmc_fallback(username):
         "tsb": round(tsb, 1)
     }
 
+def fetch_single_workout_detail(access_token, athlete_id, workout_id):
+    url = f"https://tpapi.trainingpeaks.com/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "Mozilla/5.0"
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log_trace(f"Error fetching single workout {workout_id} detail: {str(e)}")
+        return None
+
 def fetch_workouts_range(username, password, cookie, token, start_date, end_date):
     access_token = get_auth_token(cookie, token)
     user_info = fetch_user_info(access_token) if access_token else None
@@ -272,10 +286,18 @@ def fetch_workouts_range(username, password, cookie, token, start_date, end_date
                 completed = w.get("completed")
                 is_completed = bool(completed) or (duration_actual is not None and duration_actual > 0)
                 
+                workout_id = w.get("workoutId")
+                description = w.get("description", "")
+                
+                if start_date == end_date and workout_id:
+                    detail = fetch_single_workout_detail(access_token, athlete_id, workout_id)
+                    if detail:
+                        description = detail.get("description", "")
+
                 workouts.append({
                     "date": w.get("workoutDay", "").split("T")[0] if w.get("workoutDay") else "",
                     "title": w.get("title", ""),
-                    "description": w.get("description", ""),
+                    "description": description,
                     "planned_tss": tss_planned if tss_planned is not None else 0.0,
                     "actual_tss": tss_actual if tss_actual is not None else 0.0,
                     "sport": sport_name,

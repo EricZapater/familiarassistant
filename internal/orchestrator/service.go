@@ -436,15 +436,6 @@ func (s *Service) handleDirectTrainingQuery(ctx context.Context, query domain.Qu
 				sb.WriteString(fmt.Sprintf(" (%.1f TSS)", w.PlannedTSS))
 			}
 			sb.WriteString("\n")
-			if w.Description != "" {
-				descLines := strings.Split(w.Description, "\n")
-				for _, line := range descLines {
-					lineClean := strings.TrimSpace(line)
-					if lineClean != "" {
-						sb.WriteString(fmt.Sprintf("  _ %s _\n", lineClean))
-					}
-				}
-			}
 		}
 	}
 
