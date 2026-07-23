@@ -41,5 +41,6 @@ type MessageSender interface {
 type TrainingPeaksService interface {
 	GetPMCData(ctx context.Context, username, password, cookie, token string) (*PMCData, error)
 	GetDailyWorkouts(ctx context.Context, username, password, cookie, token, date string) ([]WorkoutData, error)
+	GetWorkoutsRange(ctx context.Context, username, password, cookie, token, startDate, endDate string) ([]WorkoutData, error)
 }
 

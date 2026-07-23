@@ -76,12 +76,22 @@ func (s *Service) ProcessQuery(ctx context.Context, query domain.Query) (string,
 		return cachedEntry.Response, nil
 	}
 
-	log.Printf("[Orchestrator] Cache MISS per a la clau '%s'. Invocant Gemini 2.0 Flash...", cacheKey)
+	log.Printf("[Orchestrator] Cache MISS per a la clau '%s'...", cacheKey)
 
-	// 2. Si no hi ha cache, utilitzem Gemini passant 's' com a ToolProvider per al Function Calling
-	response, err := s.aiSvc.Chat(ctx, query, s)
-	if err != nil {
-		return "", fmt.Errorf("error al processar la consulta amb l'assistent d'IA: %w", err)
+	// 2. Si no hi ha cache, processem directament si és /training o cridem Gemini altrament
+	var response string
+	if query.Command == domain.CmdTraining {
+		var err error
+		response, err = s.handleDirectTrainingQuery(ctx, query)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		var err error
+		response, err = s.aiSvc.Chat(ctx, query, s)
+		if err != nil {
+			return "", fmt.Errorf("error al processar la consulta amb l'assistent d'IA: %w", err)
+		}
 	}
 
 	// 3. Desa el resultat a la cache si s'ha obtingut una resposta vàlida
@@ -312,5 +322,117 @@ func (s *Service) generateCacheParams(query domain.Query, now time.Time) (string
 		key := fmt.Sprintf("generic:%d", now.Unix())
 		return key, now.Add(5 * time.Minute)
 	}
+}
+
+// handleDirectTrainingQuery gestiona directament la consulta d'entrenaments sense passar per la IA.
+func (s *Service) handleDirectTrainingQuery(ctx context.Context, query domain.Query) (string, error) {
+	log.Printf("[Orchestrator] Processant petició de training directa per a %s (telèfon: %s)...", query.UserName, query.SenderPhone)
+
+	userCfg, found := s.findTPUserConfig(query.UserName)
+	if !found {
+		return "⚠️ No s'ha trobat cap configuració de TrainingPeaks associada al teu usuari.", nil
+	}
+
+	// Calculem el rang de dates: des d'avui fins a d'aquí 7 dies (8 dies en total)
+	now := time.Now().In(s.loc)
+	startDate := now.Format("2006-01-02")
+	endDate := now.AddDate(0, 0, 7).Format("2006-01-02")
+
+	workouts, err := s.tpService.GetWorkoutsRange(ctx, userCfg.Username, userCfg.Password, userCfg.Cookie, userCfg.Token, startDate, endDate)
+	if err != nil {
+		log.Printf("[Orchestrator] Error obtenint entrenaments de TrainingPeaks: %v", err)
+		return "", fmt.Errorf("error obtenint entrenaments de TrainingPeaks: %w", err)
+	}
+
+	if len(workouts) == 0 {
+		return fmt.Sprintf("📅 *Entrenaments de la propera setmana (%s a %s)*:\n\nNo hi ha cap entrenament planificat a TrainingPeaks per a aquest període.", formatDateStr(startDate), formatDateStr(endDate)), nil
+	}
+
+	// Agrupem els entrenaments per data
+	workoutsByDate := make(map[string][]domain.WorkoutData)
+	var datesOrdered []string
+	
+	// Preparem els propers 8 dies (des d'avui fins a d'aquí 7 dies) per mostrar-los en ordre
+	for i := 0; i <= 7; i++ {
+		dStr := now.AddDate(0, 0, i).Format("2006-01-02")
+		datesOrdered = append(datesOrdered, dStr)
+	}
+
+	for _, w := range workouts {
+		workoutsByDate[w.Date] = append(workoutsByDate[w.Date], w)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🏋️‍♂️ *Entrenaments de la propera setmana per a %s* (%s - %s):\n", capitalize(userCfg.Name), formatDateStr(startDate), formatDateStr(endDate)))
+
+	hasWorkouts := false
+	for _, dateStr := range datesOrdered {
+		wList, found := workoutsByDate[dateStr]
+		if !found || len(wList) == 0 {
+			continue
+		}
+		
+		hasWorkouts = true
+		parsedDate, err := time.Parse("2006-01-02", dateStr)
+		var dateHeader string
+		if err == nil {
+			dateHeader = parsedDate.Format("02/01")
+			dateHeader = fmt.Sprintf("%s (%s)", dateHeader, getWeekdayCatalan(parsedDate.Weekday()))
+		} else {
+			dateHeader = dateStr
+		}
+
+		sb.WriteString(fmt.Sprintf("\n📅 *%s*:\n", dateHeader))
+		for _, w := range wList {
+			sb.WriteString(fmt.Sprintf("• *%s*", w.Title))
+			if w.PlannedTSS > 0 {
+				sb.WriteString(fmt.Sprintf(" (%.1f TSS)", w.PlannedTSS))
+			}
+			sb.WriteString("\n")
+			if w.Description != "" {
+				descLines := strings.Split(w.Description, "\n")
+				for _, line := range descLines {
+					lineClean := strings.TrimSpace(line)
+					if lineClean != "" {
+						sb.WriteString(fmt.Sprintf("  _ %s _\n", lineClean))
+					}
+				}
+			}
+		}
+	}
+
+	if !hasWorkouts {
+		return fmt.Sprintf("📅 *Entrenaments de la propera setmana (%s a %s)*:\n\nNo s'ha trobat cap entrenament planificat en aquests dies.", formatDateStr(startDate), formatDateStr(endDate)), nil
+	}
+
+	return sb.String(), nil
+}
+
+func formatDateStr(dateStr string) string {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return dateStr
+	}
+	return t.Format("02/01/2006")
+}
+
+func capitalize(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func getWeekdayCatalan(wd time.Weekday) string {
+	days := map[time.Weekday]string{
+		time.Monday:    "Dilluns",
+		time.Tuesday:   "Dimarts",
+		time.Wednesday: "Dimecres",
+		time.Thursday:  "Dijous",
+		time.Friday:    "Divendres",
+		time.Saturday:  "Dissabte",
+		time.Sunday:    "Diumenge",
+	}
+	return days[wd]
 }
 

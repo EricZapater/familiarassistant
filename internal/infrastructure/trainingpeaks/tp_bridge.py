@@ -2,10 +2,12 @@
 """
 TrainingPeaks MCP / Subprocess Bridge Script
 Reads environment variables:
-  - TP_COMMAND: "get_pmc" or "get_workout"
+  - TP_COMMAND: "get_pmc", "get_workout", or "get_workouts_range"
   - TP_USERNAME: TrainingPeaks username
   - TP_PASSWORD: TrainingPeaks password
   - TP_DATE: Date in YYYY-MM-DD format (for get_workout)
+  - TP_START_DATE: Start date in YYYY-MM-DD format (for get_workouts_range)
+  - TP_END_DATE: End date in YYYY-MM-DD format (for get_workouts_range)
 
 Outputs JSON to stdout.
 """
@@ -18,9 +20,58 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+WORKOUT_TYPE_VALUE_TO_SPORT = {
+    1: "Swim",
+    2: "Bike",
+    3: "Run",
+    4: "Brick",
+    5: "Crosstrain",
+    6: "Race",
+    7: "DayOff",
+    8: "MtnBike",
+    9: "Strength",
+    10: "Custom",
+    11: "XCSki",
+    12: "Rowing",
+    13: "Walk",
+    29: "Strength",
+    100: "Other"
+}
+
 def log_trace(msg):
     sys.stderr.write(f"[TrainingPeaks API Trace] {msg}\n")
     sys.stderr.flush()
+
+def resolve_athlete_id(user_data):
+    if not user_data:
+        return None
+    
+    # Direct athleteId check
+    if "athleteId" in user_data:
+        return user_data["athleteId"]
+        
+    person_id = user_data.get("personId") or user_data.get("userId")
+    athletes = user_data.get("athletes", [])
+    
+    athlete_id = None
+    if athletes:
+        email = (user_data.get("email") or "").lower() or (user_data.get("username") or "").lower()
+        for a in athletes:
+            if a.get("coachedBy") == person_id and (a.get("email") or "").lower() == email:
+                athlete_id = a.get("athleteId")
+                break
+        if not athlete_id:
+            user_last = (user_data.get("lastName") or "").lower()
+            for a in athletes:
+                if (a.get("lastName") or "").lower() == user_last and a.get("coachedBy") == person_id:
+                    athlete_id = a.get("athleteId")
+                    break
+        if not athlete_id:
+            athlete_id = person_id or (athletes[0].get("athleteId") if athletes else None)
+    else:
+        athlete_id = person_id
+        
+    return athlete_id
 
 def main():
     command = os.environ.get("TP_COMMAND", "").strip().lower()
@@ -29,6 +80,8 @@ def main():
     cookie = os.environ.get("TP_COOKIE", "").strip()
     token = os.environ.get("TP_TOKEN", "").strip()
     target_date = os.environ.get("TP_DATE", "").strip()
+    start_date = os.environ.get("TP_START_DATE", "").strip()
+    end_date = os.environ.get("TP_END_DATE", "").strip()
 
     log_trace(f"Iniciant petició del bridge (Comandament: '{command}', Usuari: '{username}', HasCookie: {bool(cookie)}, HasToken: {bool(token)})")
 
@@ -44,6 +97,11 @@ def main():
             result = fetch_pmc(username, password, cookie, token)
         elif command == "get_workout":
             result = fetch_workout(username, password, cookie, token, target_date)
+        elif command == "get_workouts_range":
+            if not start_date or not end_date:
+                result = {"status": "error", "message": "TP_START_DATE o TP_END_DATE no especificats"}
+            else:
+                result = fetch_workouts_range(username, password, cookie, token, start_date, end_date)
         else:
             result = {"status": "error", "message": f"Comandament desconegut: {command}"}
 
@@ -118,67 +176,144 @@ def fetch_pmc(username, password, cookie, token):
     access_token = get_auth_token(cookie, token)
     user_info = fetch_user_info(access_token) if access_token else None
 
-    if user_info and access_token:
-        user_id = user_info["user_id"]
-        is_premium = user_info["is_premium"]
+    if not access_token or not user_info:
+        return get_pmc_fallback(username)
 
-        # Intenció de consultar mètriques directes
-        pmc_url = f"https://tpapi.trainingpeaks.com/fitness/v1/athletes/{user_id}/atp"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "User-Agent": "Mozilla/5.0"
-        }
-        try:
-            req = urllib.request.Request(pmc_url, headers=headers, method="GET")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw_body = resp.read().decode("utf-8")
-                data = json.loads(raw_body)
+    athlete_id = resolve_athlete_id(user_info.get("data", user_info))
+    if not athlete_id:
+        return get_pmc_fallback(username)
+
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    
+    url = f"https://tpapi.trainingpeaks.com/fitness/v1/athletes/{athlete_id}/reporting/performancedata/{yesterday.isoformat()}/{today.isoformat()}"
+    body = {
+        "atlConstant": 7,
+        "atlStart": 0,
+        "ctlConstant": 42,
+        "ctlStart": 0,
+        "workoutTypes": []
+    }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data and isinstance(data, list):
+                latest = data[-1]
                 return {
                     "status": "success",
-                    "ctl": float(data.get("ctl", 65.0)),
-                    "atl": float(data.get("atl", 75.0)),
-                    "tsb": float(data.get("tsb", -10.0))
+                    "ctl": round(latest.get("ctl", 0.0), 1),
+                    "atl": round(latest.get("atl", 0.0), 1),
+                    "tsb": round(latest.get("tsb", 0.0), 1)
                 }
-        except urllib.error.HTTPError as e:
-            if e.code == 402:
-                log_trace(f"Compte TrainingPeaks actiu autenticat per a '{username}' (userId: {user_id}). Les mètriques PMC/ATP requereixen pla Premium. Generant estimació d'estat de forma...")
-            else:
-                log_trace(f"HTTP Error {e.code} consultant mètriques PMC: {e.reason}")
-        except Exception as e:
-            log_trace(f"Error consultant mètriques PMC: {str(e)}")
+    except Exception as e:
+        log_trace(f"Error fetching real PMC data: {str(e)}")
 
+    return get_pmc_fallback(username)
+
+def get_pmc_fallback(username):
     log_trace("Mètode fallback/estimació utilitzat per a les mètriques PMC...")
     user_hash = sum(ord(c) for c in username) if username else 100
     ctl = float(50 + (user_hash % 40))
     atl = float(60 + ((user_hash * 3) % 35))
     tsb = ctl - atl
-    pmc_result = {
+    return {
         "status": "success",
         "ctl": round(ctl, 1),
         "atl": round(atl, 1),
         "tsb": round(tsb, 1)
     }
-    log_trace(f"Mètriques PMC retornades: CTL={pmc_result['ctl']}, ATL={pmc_result['atl']}, TSB={pmc_result['tsb']}")
-    return pmc_result
 
-def fetch_workout(username, password, cookie, token, date_str):
+def fetch_workouts_range(username, password, cookie, token, start_date, end_date):
     access_token = get_auth_token(cookie, token)
     user_info = fetch_user_info(access_token) if access_token else None
 
-    if user_info and access_token:
-        user_id = user_info["user_id"]
-        log_trace(f"Cercant entrenaments planificats per a la data {date_str} (userId: {user_id})...")
+    if not access_token or not user_info:
+        return {"status": "error", "message": "Autenticació fallida amb TrainingPeaks"}
 
-    workout_result = {
-        "status": "success",
-        "date": date_str,
-        "title": f"Sessió de Rodatge i Sèries Z4 ({username})",
-        "description": "Escalfament: 15 minuts en Z2 progressiu.\nBloc Principal: 4 sèries de 8 minuts en Z4 (Umbral 95-105% FTP) amb 3 minuts de recuperació suau en Z1.\nRefredament: 15 minuts en Z1 fàcil.",
-        "planned_tss": 82.5
+    athlete_id = resolve_athlete_id(user_info.get("data", user_info))
+    if not athlete_id:
+        return {"status": "error", "message": "No s'ha pogut obtenir l'ID de l'atleta"}
+
+    log_trace(f"Cercant entrenaments de {start_date} a {end_date} per a l'atleta {athlete_id}...")
+    url = f"https://tpapi.trainingpeaks.com/fitness/v6/athletes/{athlete_id}/workouts/{start_date}/{end_date}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "Mozilla/5.0"
     }
-    log_trace(f"Entrenament retornat: Títol='{workout_result['title']}', TSS={workout_result['planned_tss']}")
-    return workout_result
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            
+            raw_list = []
+            if isinstance(data, list):
+                raw_list = data
+            elif isinstance(data, dict) and "workouts" in data:
+                raw_list = data["workouts"]
+
+            workouts = []
+            for w in raw_list:
+                sport_id = w.get("workoutTypeValueId")
+                sport_name = WORKOUT_TYPE_VALUE_TO_SPORT.get(sport_id, "Other")
+                
+                duration_planned = w.get("totalTimePlanned", 0.0)
+                duration_actual = w.get("totalTime", 0.0)
+                tss_planned = w.get("tssPlanned", 0.0)
+                tss_actual = w.get("tssActual", 0.0)
+                
+                completed = w.get("completed")
+                is_completed = bool(completed) or (duration_actual is not None and duration_actual > 0)
+                
+                workouts.append({
+                    "date": w.get("workoutDay", "").split("T")[0] if w.get("workoutDay") else "",
+                    "title": w.get("title", ""),
+                    "description": w.get("description", ""),
+                    "planned_tss": tss_planned if tss_planned is not None else 0.0,
+                    "actual_tss": tss_actual if tss_actual is not None else 0.0,
+                    "sport": sport_name,
+                    "completed": is_completed
+                })
+
+            return {
+                "status": "success",
+                "workouts": workouts
+            }
+
+    except Exception as e:
+        log_trace(f"Error consultant entrenaments de {start_date} a {end_date}: {str(e)}")
+        return {"status": "error", "message": f"Error consultant entrenaments de TrainingPeaks: {str(e)}"}
+
+def fetch_workout(username, password, cookie, token, date_str):
+    res = fetch_workouts_range(username, password, cookie, token, date_str, date_str)
+    if res.get("status") == "error":
+        return res
+        
+    workouts = res.get("workouts", [])
+    if not workouts:
+        return {
+            "status": "success",
+            "date": date_str,
+            "title": "Sense entrenament",
+            "description": "Avui no hi ha cap entrenament planificat a TrainingPeaks.",
+            "planned_tss": 0.0
+        }
+        
+    w = workouts[0]
+    return {
+        "status": "success",
+        "date": w["date"],
+        "title": f"{w['sport']}: {w['title']}" if w['sport'] else w['title'],
+        "description": w["description"] or "Sense descripció.",
+        "planned_tss": w["planned_tss"]
+    }
 
 if __name__ == "__main__":
     main()
-

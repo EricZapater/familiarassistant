@@ -48,19 +48,7 @@ func NewService() *Service {
 	}
 }
 
-type scriptBridgeResponse struct {
-	Status      string  `json:"status"`
-	Message     string  `json:"message,omitempty"`
-	CTL         float64 `json:"ctl,omitempty"`
-	ATL         float64 `json:"atl,omitempty"`
-	TSB         float64 `json:"tsb,omitempty"`
-	Date        string  `json:"date,omitempty"`
-	Title       string  `json:"title,omitempty"`
-	Description string  `json:"description,omitempty"`
-	PlannedTSS  float64 `json:"planned_tss,omitempty"`
-}
-
-func (s *Service) runBridgeScript(ctx context.Context, cmdName, username, password, cookie, token, date string) (*scriptBridgeResponse, error) {
+func (s *Service) runBridgeScriptRaw(ctx context.Context, cmdName, username, password, cookie, token, date, startDate, endDate string) ([]byte, error) {
 	ctxTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -79,6 +67,12 @@ func (s *Service) runBridgeScript(ctx context.Context, cmdName, username, passwo
 	}
 	if date != "" {
 		env = append(env, fmt.Sprintf("TP_DATE=%s", date))
+	}
+	if startDate != "" {
+		env = append(env, fmt.Sprintf("TP_START_DATE=%s", startDate))
+	}
+	if endDate != "" {
+		env = append(env, fmt.Sprintf("TP_END_DATE=%s", endDate))
 	}
 	cmd.Env = env
 
@@ -99,25 +93,28 @@ func (s *Service) runBridgeScript(ctx context.Context, cmdName, username, passwo
 	}
 
 	log.Printf("[TrainingPeaks MCP Subprocess JSON Output]: %s", strings.TrimSpace(outBuf.String()))
-
-	var resp scriptBridgeResponse
-	if err := json.Unmarshal(outBuf.Bytes(), &resp); err != nil {
-		log.Printf("[TrainingPeaks MCP Subprocess] Error parsejant JSON de sortida: %v. Raw output: %s", err, outBuf.String())
-		return nil, fmt.Errorf("resposta invàlida del subprocés de TrainingPeaks: %w", err)
-	}
-
-	if resp.Status == "error" {
-		return nil, fmt.Errorf("%s", resp.Message)
-	}
-
-	return &resp, nil
+	return outBuf.Bytes(), nil
 }
 
 // GetPMCData recupera les mètriques de Fitness (CTL), Fatigue (ATL) i Form (TSB).
 func (s *Service) GetPMCData(ctx context.Context, username, password, cookie, token string) (*domain.PMCData, error) {
-	resp, err := s.runBridgeScript(ctx, "get_pmc", username, password, cookie, token, "")
+	raw, err := s.runBridgeScriptRaw(ctx, "get_pmc", username, password, cookie, token, "", "", "")
 	if err != nil {
 		return nil, fmt.Errorf("no s'han pogut obtenir les mètriques PMC: %w", err)
+	}
+
+	var resp struct {
+		Status  string  `json:"status"`
+		Message string  `json:"message,omitempty"`
+		CTL     float64 `json:"ctl,omitempty"`
+		ATL     float64 `json:"atl,omitempty"`
+		TSB     float64 `json:"tsb,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("resposta invàlida de PMC: %w", err)
+	}
+	if resp.Status == "error" {
+		return nil, fmt.Errorf("%s", resp.Message)
 	}
 
 	return &domain.PMCData{
@@ -130,17 +127,74 @@ func (s *Service) GetPMCData(ctx context.Context, username, password, cookie, to
 
 // GetDailyWorkouts recupera la informació de les sessions planificades per a la data sol·licitada.
 func (s *Service) GetDailyWorkouts(ctx context.Context, username, password, cookie, token, date string) ([]domain.WorkoutData, error) {
-	resp, err := s.runBridgeScript(ctx, "get_workout", username, password, cookie, token, date)
+	raw, err := s.runBridgeScriptRaw(ctx, "get_workout", username, password, cookie, token, date, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("no s'han pogut obtenir els entrenaments planificats: %w", err)
 	}
 
-	workout := domain.WorkoutData{
-		Date:        resp.Date,
-		Title:       resp.Title,
-		Description: resp.Description,
-		PlannedTSS:  resp.PlannedTSS,
+	var resp struct {
+		Status      string  `json:"status"`
+		Message     string  `json:"message,omitempty"`
+		Date        string  `json:"date,omitempty"`
+		Title       string  `json:"title,omitempty"`
+		Description string  `json:"description,omitempty"`
+		PlannedTSS  float64 `json:"planned_tss,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("resposta invàlida de workout: %w", err)
+	}
+	if resp.Status == "error" {
+		return nil, fmt.Errorf("%s", resp.Message)
 	}
 
-	return []domain.WorkoutData{workout}, nil
+	return []domain.WorkoutData{
+		{
+			Date:        resp.Date,
+			Title:       resp.Title,
+			Description: resp.Description,
+			PlannedTSS:  resp.PlannedTSS,
+		},
+	}, nil
+}
+
+// GetWorkoutsRange recupera la llista d'entrenaments de l'atleta per a un rang de dates específic.
+func (s *Service) GetWorkoutsRange(ctx context.Context, username, password, cookie, token, startDate, endDate string) ([]domain.WorkoutData, error) {
+	raw, err := s.runBridgeScriptRaw(ctx, "get_workouts_range", username, password, cookie, token, "", startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("no s'han pogut obtenir els entrenaments en el rang %s-%s: %w", startDate, endDate, err)
+	}
+
+	var resp struct {
+		Status   string `json:"status"`
+		Message  string `json:"message,omitempty"`
+		Workouts []struct {
+			Date        string  `json:"date"`
+			Title       string  `json:"title"`
+			Description string  `json:"description"`
+			PlannedTSS  float64 `json:"planned_tss"`
+			Sport       string  `json:"sport"`
+			Completed   bool    `json:"completed"`
+		} `json:"workouts"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("resposta de rang invàlida: %w", err)
+	}
+	if resp.Status == "error" {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+
+	var result []domain.WorkoutData
+	for _, w := range resp.Workouts {
+		displayTitle := w.Title
+		if w.Sport != "" {
+			displayTitle = fmt.Sprintf("%s: %s", w.Sport, w.Title)
+		}
+		result = append(result, domain.WorkoutData{
+			Date:        w.Date,
+			Title:       displayTitle,
+			Description: w.Description,
+			PlannedTSS:  w.PlannedTSS,
+		})
+	}
+	return result, nil
 }
