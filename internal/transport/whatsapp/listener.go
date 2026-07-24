@@ -54,7 +54,7 @@ func (l *Listener) handleMessage(msg *events.Message) {
 		return
 	}
 	if !isGroup && msg.Info.Sender.User != l.allowedMyID {
-		// Silent drop per a missatges privats de tercers
+		// Silent drop per a missatges privats de tercers 
 		return
 	}
 
