@@ -244,6 +244,91 @@ def fetch_single_workout_detail(access_token, athlete_id, workout_id):
         log_trace(f"Error fetching single workout {workout_id} detail: {str(e)}")
         return None
 
+def format_tp_structure(structure_data):
+    if not structure_data:
+        return ""
+    if isinstance(structure_data, str):
+        try:
+            structure_data = json.loads(structure_data)
+        except Exception:
+            return ""
+            
+    if not isinstance(structure_data, dict):
+        return ""
+        
+    blocks = structure_data.get("structure")
+    if not isinstance(blocks, list):
+        return ""
+        
+    lines = []
+    for block in blocks:
+        block_type = block.get("type")
+        length = block.get("length", {})
+        reps = int(length.get("value", 1))
+        steps = block.get("steps", [])
+        
+        block_lines = []
+        for step in steps:
+            name = step.get("name", "")
+            step_len = step.get("length", {})
+            val = step_len.get("value", 0)
+            unit = step_len.get("unit", "")
+            
+            # Format duration/distance
+            if unit == "second":
+                m = int(val) // 60
+                s = int(val) % 60
+                len_str = f"{m}:{s:02d}" if s > 0 else f"{m} min"
+            elif unit == "meter":
+                len_str = f"{int(val)}m"
+            elif unit == "kilometer":
+                len_str = f"{val:.1f}km"
+            else:
+                len_str = f"{val} {unit}"
+                
+            # Format targets (intensity/cadence)
+            targets = step.get("targets", [])
+            target_str = ""
+            for t in targets:
+                min_v = t.get("minValue")
+                max_v = t.get("maxValue")
+                t_unit = t.get("unit", "")
+                
+                # Format intensity target unit
+                if t_unit == "percentOfFtp":
+                    t_unit_str = "% FTP"
+                elif t_unit == "percentOfThresholdHr":
+                    t_unit_str = "% FTHR"
+                elif t_unit == "percentOfThresholdPace":
+                    t_unit_str = "% Ritme"
+                elif t_unit == "roundOrStridePerMinute":
+                    t_unit_str = "rpm"
+                else:
+                    t_unit_str = t_unit
+                    
+                if min_v is not None and max_v is not None:
+                    target_str = f" @ {min_v:.0f}-{max_v:.0f}{t_unit_str}"
+                elif min_v is not None:
+                    target_str = f" @ >{min_v:.0f}{t_unit_str}"
+                elif max_v is not None:
+                    target_str = f" @ <{max_v:.0f}{t_unit_str}"
+                    
+            step_name_part = f" ({name})" if name else ""
+            block_lines.append(f"{len_str}{target_str}{step_name_part}")
+            
+        if block_type == "repetition" and reps > 1:
+            if len(block_lines) == 1:
+                lines.append(f"• {reps}x ({block_lines[0]})")
+            else:
+                lines.append(f"• {reps}x:")
+                for bl in block_lines:
+                    lines.append(f"    - {bl}")
+        else:
+            for bl in block_lines:
+                lines.append(f"• {bl}")
+                
+    return "\n".join(lines)
+
 def fetch_workouts_range(username, password, cookie, token, start_date, end_date):
     access_token = get_auth_token(cookie, token)
     user_info = fetch_user_info(access_token) if access_token else None
@@ -292,7 +377,15 @@ def fetch_workouts_range(username, password, cookie, token, start_date, end_date
                 if start_date == end_date and workout_id:
                     detail = fetch_single_workout_detail(access_token, athlete_id, workout_id)
                     if detail:
-                        description = detail.get("description", "")
+                        description = detail.get("description", "") or ""
+                        structure_data = detail.get("structure")
+                        if structure_data:
+                            structure_str = format_tp_structure(structure_data)
+                            if structure_str:
+                                if description:
+                                    description = f"{structure_str}\n\n{description}"
+                                else:
+                                    description = structure_str
 
                 workouts.append({
                     "date": w.get("workoutDay", "").split("T")[0] if w.get("workoutDay") else "",
